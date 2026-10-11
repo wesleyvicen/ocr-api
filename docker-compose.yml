@@ -1,24 +1,9 @@
 services:
   api:
     build: .
+    image: ocr-analab-api:latest
     env_file: .env
     restart: unless-stopped
-    expose:
-      - "8000"
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
+    # só local: o nginx da VPS faz o proxy público com HTTPS
     ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      DOMAIN: ${DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-    depends_on:
-      - api
-
-volumes:
-  caddy_data:
+      - "127.0.0.1:${APP_PORT:-8011}:8000"
