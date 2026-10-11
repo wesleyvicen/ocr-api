@@ -2,7 +2,7 @@
 
 Uso (dentro de backend/): python tests/avaliar.py
 Para incluir uma foto nova, adicione-a em amostras/ e a resposta correta em tests/gabarito.json
-(v = valores na ordem da tela, f = flags por índice da linha, h = campos do cabeçalho).
+(equipamento, v = valores na ordem do modelo, f = flags por índice da linha, h = campos do cabeçalho).
 """
 import json
 import sys
@@ -18,7 +18,11 @@ reader = Reader()
 tv = tf = th = nv = nf = nh = wrong_hi = 0
 for name, g in gt.items():
     t = time.time()
-    out = reader.read((ROOT.parent / "amostras" / name).read_bytes())
+    raw = (ROOT.parent / "amostras" / name).read_bytes()
+    out = reader.read(raw, g["equipamento"])
+    auto = reader.read(raw)["equipamento"]
+    if auto != g["equipamento"]:
+        print(f"  deteccao automatica errou: {auto}")
     dt = time.time() - t
     errs = []
     for i, x in enumerate(out["resultados"]):

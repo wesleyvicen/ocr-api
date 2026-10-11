@@ -2,11 +2,11 @@ import os
 import secrets
 import threading
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from .ocr import Reader
+from .ocr import EQUIPAMENTOS, Reader, UnknownDevice
 
 API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
@@ -32,9 +32,9 @@ def check_key(x_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="API key inválida")
 
 
-def run(raw: bytes) -> dict:
+def run(raw: bytes, equipamento: str | None) -> dict:
     with lock:
-        return reader.read(raw)
+        return reader.read(raw, equipamento)
 
 
 @app.get("/health")
@@ -42,8 +42,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/equipamentos")
+async def equipamentos():
+    return [{"id": k, "nome": v} for k, v in EQUIPAMENTOS.items()]
+
+
 @app.post("/api/ocr")
-async def ocr(file: UploadFile = File(...), x_api_key: str | None = Header(default=None)):
+async def ocr(
+    file: UploadFile = File(...),
+    equipamento: str | None = Form(default=None, description="hematoclin-3.0, abx-micros-es60 ou auto"),
+    equipamento_q: str | None = Query(default=None, alias="equipamento"),
+    x_api_key: str | None = Header(default=None),
+):
     check_key(x_api_key)
     raw = await file.read()
     if not raw:
@@ -51,6 +61,8 @@ async def ocr(file: UploadFile = File(...), x_api_key: str | None = Header(defau
     if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"Arquivo maior que {MAX_UPLOAD_MB} MB")
     try:
-        return await run_in_threadpool(run, raw)
+        return await run_in_threadpool(run, raw, equipamento or equipamento_q)
+    except UnknownDevice as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

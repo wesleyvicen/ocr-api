@@ -1,6 +1,8 @@
-"""Leitura de telas de analisador hematológico ("Rev. histog. amostras").
+"""Leitura de telas de analisadores hematológicos.
 
-Pipeline 100% local, sem serviço externo:
+Hematoclin 3.0 ("Rev. histog. amostras") neste módulo; ABX Micros ES 60 em abx.py.
+
+Pipeline da Hematoclin, 100% local, sem serviço externo:
   1. Retifica perspectiva usando a área azul da tela.
   2. Realça texto (canal vermelho invertido + CLAHE): texto amarelo/branco sobre azul vira preto sobre branco.
   3. RapidOCR (modelos PaddleOCR em ONNX) detecta e lê o texto.
@@ -47,6 +49,27 @@ HEADER_KEYS = [
 ]
 
 NUM_RE = re.compile(r"^\s*(\d+)(?:\s*[.,]\s*(\d+)|\s+(\d)(?!\d))?")
+
+
+EQUIPAMENTOS = {
+    "hematoclin-3.0": "Hematoclin 3.0",
+    "abx-micros-es60": "ABX Micros ES 60",
+}
+
+
+class UnknownDevice(ValueError):
+    def __init__(self, eq: str):
+        super().__init__(f"Equipamento desconhecido: {eq}. Use: auto, " + ", ".join(EQUIPAMENTOS))
+
+
+def detect_device(img: np.ndarray) -> str:
+    """Cor dominante da tela: Hematoclin é azul, ABX é verde-amarelado."""
+    h, w = img.shape[:2]
+    hsv = cv2.cvtColor(img[h // 5: 4 * h // 5, w // 5: 4 * w // 5], cv2.COLOR_BGR2HSV)
+    sat = hsv[..., 1] > 80
+    blue = ((hsv[..., 0] >= 95) & (hsv[..., 0] <= 130) & sat).mean()
+    yellow_green = ((hsv[..., 0] >= 22) & (hsv[..., 0] <= 45) & sat).mean()
+    return "hematoclin-3.0" if blue >= yellow_green else "abx-micros-es60"
 
 
 @dataclass
@@ -155,7 +178,11 @@ class Reader:
             # dígito extra colado (ex.: "7.7 fL" lido como "7.71")
             whole, frac = v.split(".")
             return (f"{whole}.{frac[:decimals]}" if decimals else whole), sc, "fix"
-        if "." in v or decimals == 0 or len(v) <= decimals or lo <= float(v) <= hi:
+        if lo <= float(v) <= hi:
+            return cand
+        if v.endswith("10") and len(v) > 2 and lo <= float(v[:-2]) <= hi:
+            return v[:-2], sc, "fix"  # "168" grudado no "10" de "x10³/uL"
+        if "." in v or decimals == 0 or len(v) <= decimals:
             return cand
         fixed = f"{v[:-decimals]}.{v[-decimals:]}"
         return (fixed, sc, "fix") if lo <= float(fixed) <= hi else cand
@@ -172,7 +199,7 @@ class Reader:
             return best
         return None
 
-    def read(self, raw: bytes) -> dict:
+    def read(self, raw: bytes, equipamento: str | None = None) -> dict:
         arr = np.frombuffer(raw, np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
@@ -181,6 +208,23 @@ class Reader:
             f = 2000 / max(img.shape[:2])
             img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
 
+        eq = (equipamento or "auto").strip().lower()
+        if eq == "auto":
+            eq = detect_device(img)
+        if eq not in EQUIPAMENTOS:
+            raise UnknownDevice(eq)
+        if eq == "abx-micros-es60":
+            from .abx import read_abx
+            out = read_abx(self, img)
+        else:
+            out = self._read_hematoclin(img)
+        return {"equipamento": eq, **out}
+
+    def _read_hematoclin(self, img: np.ndarray) -> dict:
+        # foto escura: estica o brilho (limiares de cor abaixo assumem tela bem exposta)
+        v98 = float(np.percentile(img.max(axis=2), 98))
+        if v98 < 220:
+            img = cv2.convertScaleAbs(img, alpha=235 / max(v98, 1.0))
         img, (ox, sw) = self.rectify(img)
         enh = self.enhance(img)
         H, W = img.shape[:2]
@@ -403,8 +447,8 @@ class Reader:
         return out
 
     @staticmethod
-    def _header(boxes: list[Box]) -> list[dict]:
-        keys = {_norm(k): k for k in HEADER_KEYS}
+    def _header(boxes: list[Box], header_keys: list[str] = HEADER_KEYS) -> list[dict]:
+        keys = {_norm(k): k for k in header_keys}
         found = {}
         for b in boxes:
             # uma caixa pode juntar dois campos: "Hora : 11-10-2026 07:26Local/Total: 8/35000"
@@ -419,4 +463,4 @@ class Reader:
                 best = max(keys, key=lambda kk: SequenceMatcher(None, nk, kk).ratio())
                 if SequenceMatcher(None, nk, best).ratio() >= 0.7 and keys[best] not in found:
                     found[keys[best]] = v.strip().lstrip(":.").strip()
-        return [{"campo": k, "valor": found.get(k, "")} for k in HEADER_KEYS]
+        return [{"campo": k, "valor": found.get(k, "")} for k in header_keys]
