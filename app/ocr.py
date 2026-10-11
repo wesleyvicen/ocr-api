@@ -56,6 +56,18 @@ EQUIPAMENTOS = {
     "abx-micros-es60": "ABX Micros ES 60",
 }
 
+# código padrão (estilo ASTM/LIS) de cada parâmetro, igual para todos os equipamentos
+CODIGOS = {
+    "GB": "WBC", "NºLinf": "LYM#", "Nº méd": "MON#", "NºGran": "GRA#",
+    "%Linf": "LYM%", "% méd": "MON%", "%Gran": "GRA%", "Hb": "HGB", "GV": "RBC",
+    "Ht": "HCT", "VCM": "MCV", "HCM": "MCH", "CHCM": "MCHC", "ADVGVC": "RDW",
+    "ADVGSD": "RDW-SD", "VPM": "MPV", "ADP": "PDW",
+    "LIN%": "LYM%", "LIN#": "LYM#", "HGB": "HGB",
+}
+
+# campo do cabeçalho com o número da amostra
+CAMPO_AMOSTRA = {"hematoclin-3.0": "ID", "abx-micros-es60": "ID amostra"}
+
 
 class UnknownDevice(ValueError):
     def __init__(self, eq: str):
@@ -218,7 +230,13 @@ class Reader:
             out = read_abx(self, img)
         else:
             out = self._read_hematoclin(img)
-        return {"equipamento": eq, **out}
+        for r in out["resultados"]:
+            r["codigo"] = CODIGOS.get(r["parametro"], r["parametro"])
+        # o ABX mostra número + nome ("l15andredeolivei"): fica só o número
+        id_tela = next((h["valor"] for h in out["cabecalho"] if h["campo"] == CAMPO_AMOSTRA[eq]), "")
+        m = re.search(r"\d+", id_tela)
+        amostra = m.group() if m else ""
+        return {"equipamento": eq, "amostra": amostra, **out}
 
     def _read_hematoclin(self, img: np.ndarray) -> dict:
         # foto escura: estica o brilho (limiares de cor abaixo assumem tela bem exposta)
